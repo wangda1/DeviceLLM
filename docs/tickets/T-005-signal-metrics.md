@@ -1,11 +1,11 @@
 # T-005 S2 信号指标（Python 原型 + 规范）
-**环境**: 🐧 Linux · **依赖**: T-002 · **规模**: M · **里程碑**: M1
+**环境**: 🐧 Linux · **依赖**: T-002 · **规模**: M · **里程碑**: M1 · **状态**: 待开始
 
 ## 背景
 不依赖模型的确定性指标，见 SPEC §4 S2。这份 Python 实现同时是 T-013 C++ 移植的**规范**，所以算法要简单、清楚、能复现，**不能用 OpenCV 里不好复现的函数**（研究时可以拿 OpenCV 做对照）。
 
 ## 交付物
-- `ml/photocritic/signals.py`，输入为 sRGB uint8、长边 1024 的图像，以及可选的显著区域 mask：
+- `ml/photocritic/signals.py`，输入为 sRGB uint8、长边 1024 的图像，以及可选的显著区域 mask。**输出的特征名、单位和定义以 `schema/features.md` 为准**（S2 部分），下面是概要：
   - 曝光：亮度直方图（256 bins，Rec.709 luma）、`clip_high`、`clip_low`、`mean_L`、`p5`、`p95`，显著区域内的同一组指标
   - 清晰度：`lap_var_global`、`lap_var_salient`、`grad_anisotropy`（运动模糊方向性）、`noise_sigma`（平坦块的 MAD）
   - 色彩：中性像素的 Lab a*/b* 均值、灰世界 CCT 估计、`sat_mean`、`sat_clip`

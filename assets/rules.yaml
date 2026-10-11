@@ -1,0 +1,342 @@
+# 融合规则 v1（起始版本）
+#
+# ⚠️ 所有阈值和权重都是基于经验的**占位起点**，还没有经过任何数据验证。
+#    T-008 必须在 synthetic dev 集上调参后覆盖这些数值，并在 git 提交信息里注明调参报告。
+#    清晰度类特征（lap_var_*、noise_sigma）的数量级尤其不确定，T-005 完成后先看分布再调。
+#
+# 语法：schema/rules_dsl.md · 特征：schema/features.md · 标签：schema/taxonomy.yaml
+version: 1
+features_version: 1
+min_confidence: 0.5
+max_issues: 6
+
+rules:
+  # ===================== exposure =====================
+  - tag: overexposed
+    dimension: exposure
+    when:
+      any:
+        - all: [{f: mean_L, gt: 170}, {f: clip_high, gt: 0.01}]
+        - all: [{f: clip_overexposed, gt: 0.75}, {f: mean_L, gt: 150}]
+    confidence:
+      max:
+        - {piecewise: {f: mean_L, points: [[170, 0.5], [210, 0.95]]}}
+        - {piecewise: {f: clip_overexposed, points: [[0.75, 0.5], [0.95, 0.9]]}}
+    severity: {f: mean_L, thresholds: [185, 200], dir: asc}
+    evidence: [mean_L, clip_high, clip_overexposed]
+
+  - tag: underexposed
+    dimension: exposure
+    when:
+      any:
+        - all: [{f: mean_L, lt: 70}, {f: p95, lt: 200}]
+        - all: [{f: clip_underexposed, gt: 0.75}, {f: mean_L, lt: 90}]
+    confidence:
+      max:
+        - {piecewise: {f: mean_L, points: [[70, 0.5], [35, 0.95]]}}
+        - {piecewise: {f: clip_underexposed, points: [[0.75, 0.5], [0.95, 0.9]]}}
+    severity: {f: mean_L, thresholds: [55, 40], dir: desc}
+    evidence: [mean_L, p95, clip_underexposed]
+    scene_overrides:
+      - scene: night
+        when: {all: [{f: mean_L, lt: 35}, {f: p95, lt: 150}]}
+        confidence: {piecewise: {f: mean_L, points: [[35, 0.5], [15, 0.9]]}}
+
+  - tag: highlights_clipped
+    dimension: exposure
+    when: {all: [{f: clip_high, gt: 0.02}]}
+    confidence: {piecewise: {f: clip_high, points: [[0.02, 0.5], [0.08, 0.95]]}}
+    severity: {f: clip_high, thresholds: [0.03, 0.06], dir: asc}
+    evidence: [clip_high, clip_high_salient]
+    scene_overrides:
+      - scene: night     # 夜景中灯光溢出很常见
+        when: {all: [{f: clip_high, gt: 0.05}]}
+        confidence: {piecewise: {f: clip_high, points: [[0.05, 0.5], [0.12, 0.9]]}}
+
+  - tag: shadows_crushed
+    dimension: exposure
+    when: {all: [{f: clip_low, gt: 0.05}]}
+    confidence: {piecewise: {f: clip_low, points: [[0.05, 0.5], [0.2, 0.95]]}}
+    severity: {f: clip_low, thresholds: [0.08, 0.15], dir: asc}
+    evidence: [clip_low, clip_low_salient]
+    scene_overrides:
+      - scene: night
+        when: {all: [{f: clip_low, gt: 0.25}]}
+        confidence: {piecewise: {f: clip_low, points: [[0.25, 0.5], [0.45, 0.9]]}}
+
+  - tag: low_contrast
+    dimension: exposure
+    when:
+      any:
+        - {f: dyn_range, lt: 110}
+        - all: [{f: clip_low_contrast, gt: 0.75}, {f: dyn_range, lt: 140}]
+    confidence:
+      max:
+        - {piecewise: {f: dyn_range, points: [[110, 0.5], [60, 0.95]]}}
+        - {piecewise: {f: clip_low_contrast, points: [[0.75, 0.5], [0.95, 0.85]]}}
+    severity: {f: dyn_range, thresholds: [95, 75], dir: desc}
+    evidence: [dyn_range, clip_low_contrast]
+
+  - tag: backlit_subject
+    dimension: exposure
+    when:
+      any:
+        - all: [{f: has_subject, eq: 1}, {f: backlit_delta, lt: -40}, {f: mean_L_background, gt: 140}]
+        - all: [{f: face_count, gte: 1}, {f: face_mean_L, lt: 70}, {f: mean_L, gt: 120}]
+    confidence:
+      max:
+        - {piecewise: {f: backlit_delta, points: [[-40, 0.5], [-100, 0.95]]}}
+        - {piecewise: {f: face_mean_L, points: [[70, 0.5], [35, 0.9]]}}
+    severity: {f: backlit_delta, thresholds: [-60, -90], dir: desc}
+    evidence: [backlit_delta, mean_L_salient, mean_L_background, face_mean_L]
+
+  # ===================== composition =====================
+  - tag: subject_not_prominent
+    dimension: composition
+    when:
+      any:
+        - all: [{f: has_subject, eq: 0}, {f: clip_subject_not_prominent, gt: 0.6}]
+        - all: [{f: has_subject, eq: 1}, {f: saliency_contrast, lt: 0.3}, {f: clip_subject_not_prominent, gt: 0.6}]
+    confidence:
+      max:
+        - {piecewise: {f: clip_subject_not_prominent, points: [[0.6, 0.5], [0.9, 0.9]]}}
+        - {piecewise: {f: saliency_contrast, points: [[0.3, 0.5], [0.1, 0.85]]}}
+    severity: {f: clip_subject_not_prominent, thresholds: [0.7, 0.85], dir: asc}
+    evidence: [has_subject, saliency_contrast, clip_subject_not_prominent]
+    scene_overrides:
+      - scene: landscape   # 风景照常常没有单一主体，提高门槛
+        when: {all: [{f: clip_subject_not_prominent, gt: 0.8}]}
+
+  - tag: subject_too_small
+    dimension: composition
+    when:
+      all:
+        - {f: has_subject, eq: 1}
+        - {f: subject_area, lt: 0.03}
+        - {not: {f: face_max_area, gt: 0.01}}
+    confidence: {piecewise: {f: subject_area, points: [[0.03, 0.5], [0.005, 0.9]]}}
+    severity: {f: subject_area, thresholds: [0.02, 0.01], dir: desc}
+    evidence: [subject_area, face_max_area]
+    scene_overrides:
+      - scene: landscape
+        when: {all: [{f: has_subject, eq: 1}, {f: subject_area, lt: 0.01}]}
+
+  - tag: subject_cut_off
+    dimension: composition
+    when:
+      any:
+        - {f: face_cut_off, eq: 1}
+        - all: [{f: has_subject, eq: 1}, {f: subject_touch_edges, gte: 1}, {f: subject_area, lt: 0.5}]
+    confidence:
+      max:
+        - {piecewise: {f: face_cut_off, points: [[0, 0], [1, 0.9]]}}
+        - {piecewise: {f: subject_touch_edges, points: [[1, 0.55], [2, 0.75]]}}
+    severity: {f: face_cut_off, thresholds: [0.5, 2], dir: asc}   # 有人脸被截断 → medium，否则 low
+    evidence: [subject_touch_edges, subject_area, face_cut_off]
+
+  - tag: cluttered_background
+    dimension: composition
+    when: {all: [{f: clip_cluttered_background, gt: 0.6}, {f: edge_density_background, gt: 0.15}]}
+    confidence:
+      min:
+        - {piecewise: {f: clip_cluttered_background, points: [[0.6, 0.5], [0.9, 0.95]]}}
+        - {piecewise: {f: edge_density_background, points: [[0.15, 0.5], [0.3, 0.95]]}}
+    severity: {f: edge_density_background, thresholds: [0.2, 0.28], dir: asc}
+    evidence: [edge_density_background, clip_cluttered_background]
+    scene_overrides:
+      - scene: street
+        when: {all: [{f: clip_cluttered_background, gt: 0.75}, {f: edge_density_background, gt: 0.22}]}
+
+  - tag: tilted_horizon
+    dimension: composition
+    when: {all: [{f: horizon_conf, gt: 0.3}, {f: horizon_abs_deg, gt: 1.5}, {f: horizon_abs_deg, lt: 15}]}
+    confidence:
+      min:
+        - {piecewise: {f: horizon_conf, points: [[0.3, 0.5], [0.7, 0.95]]}}
+        - {piecewise: {f: horizon_abs_deg, points: [[1.5, 0.6], [3, 0.95]]}}
+    severity: {f: horizon_abs_deg, thresholds: [2.5, 5], dir: asc}
+    evidence: [horizon_angle_deg, horizon_conf]
+
+  - tag: unbalanced
+    dimension: composition
+    when:
+      all:
+        - {f: has_subject, eq: 1}
+        - {f: clip_unbalanced, gt: 0.65}
+        - {f: subject_thirds_dist, gt: 0.12}
+    confidence: {piecewise: {f: clip_unbalanced, points: [[0.65, 0.5], [0.9, 0.85]]}}
+    severity: {const: low}
+    evidence: [subject_thirds_dist, subject_center_dist, clip_unbalanced]
+
+  - tag: excess_empty_space
+    dimension: composition
+    when: {all: [{f: flat_ratio, gt: 0.6}, {f: subject_area, lt: 0.1}]}
+    confidence: {piecewise: {f: flat_ratio, points: [[0.6, 0.5], [0.85, 0.9]]}}
+    severity: {f: flat_ratio, thresholds: [0.7, 0.8], dir: asc}
+    evidence: [flat_ratio, subject_area]
+
+  # ===================== color =====================
+  - tag: warm_cast
+    dimension: color
+    when: {all: [{f: lab_b_neutral, gt: 8}]}             # neutral_ratio 太低时特征为 NaN，规则自动不触发
+    confidence: {piecewise: {f: lab_b_neutral, points: [[8, 0.5], [20, 0.95]]}}
+    severity: {f: lab_b_neutral, thresholds: [12, 18], dir: asc}
+    evidence: [lab_b_neutral, cct, neutral_ratio]
+
+  - tag: cool_cast
+    dimension: color
+    when: {all: [{f: lab_b_neutral, lt: -8}]}
+    confidence: {piecewise: {f: lab_b_neutral, points: [[-8, 0.5], [-20, 0.95]]}}
+    severity: {f: lab_b_neutral, thresholds: [-12, -18], dir: desc}
+    evidence: [lab_b_neutral, cct, neutral_ratio]
+
+  - tag: green_tint
+    dimension: color
+    when: {all: [{f: lab_a_neutral, lt: -5}]}
+    confidence: {piecewise: {f: lab_a_neutral, points: [[-5, 0.5], [-12, 0.95]]}}
+    severity: {f: lab_a_neutral, thresholds: [-7, -10], dir: desc}
+    evidence: [lab_a_neutral, neutral_ratio]
+
+  - tag: magenta_tint
+    dimension: color
+    when: {all: [{f: lab_a_neutral, gt: 6}]}
+    confidence: {piecewise: {f: lab_a_neutral, points: [[6, 0.5], [14, 0.95]]}}
+    severity: {f: lab_a_neutral, thresholds: [8, 11], dir: asc}
+    evidence: [lab_a_neutral, neutral_ratio]
+
+  - tag: oversaturated
+    dimension: color
+    when:
+      any:
+        - {f: sat_clip, gt: 0.05}
+        - all: [{f: sat_mean, gt: 0.6}, {f: clip_oversaturated, gt: 0.6}]
+    confidence:
+      max:
+        - {piecewise: {f: sat_clip, points: [[0.05, 0.5], [0.15, 0.95]]}}
+        - {piecewise: {f: sat_mean, points: [[0.6, 0.5], [0.75, 0.9]]}}
+    severity: {f: sat_clip, thresholds: [0.08, 0.12], dir: asc}
+    evidence: [sat_mean, sat_clip, clip_oversaturated]
+
+  - tag: dull_colors
+    dimension: color
+    when: {all: [{f: sat_mean, lt: 0.15}, {f: clip_dull_colors, gt: 0.55}]}
+    confidence: {piecewise: {f: sat_mean, points: [[0.15, 0.5], [0.06, 0.9]]}}
+    severity: {f: sat_mean, thresholds: [0.12, 0.08], dir: desc}
+    evidence: [sat_mean, clip_dull_colors]
+
+  # ===================== sharpness =====================
+  - tag: motion_blur
+    dimension: sharpness
+    when: {all: [{f: lap_var_global, lt: 0.002}, {f: grad_anisotropy, gt: 0.5}]}
+    confidence:
+      min:
+        - {piecewise: {f: grad_anisotropy, points: [[0.5, 0.5], [0.8, 0.95]]}}
+        - {piecewise: {f: lap_var_global, points: [[0.002, 0.5], [0.0005, 0.95]]}}
+    severity: {f: lap_var_global, thresholds: [0.0012, 0.0006], dir: desc}
+    evidence: [lap_var_global, grad_anisotropy, grad_direction_deg, exif_exposure_time_s]
+
+  - tag: out_of_focus
+    dimension: sharpness
+    when:
+      all:
+        - {f: lap_var_global, lt: 0.0015}
+        - {not: {f: grad_anisotropy, gt: 0.5}}
+        - any: [{f: has_subject, eq: 0}, {f: focus_ratio, gte: 0.6}]
+    confidence: {piecewise: {f: lap_var_global, points: [[0.0015, 0.5], [0.0004, 0.95]]}}
+    severity: {f: lap_var_global, thresholds: [0.001, 0.0006], dir: desc}
+    evidence: [lap_var_global, grad_anisotropy]
+
+  - tag: subject_out_of_focus
+    dimension: sharpness
+    when:
+      any:
+        - all: [{f: has_subject, eq: 1}, {f: focus_ratio, lt: 0.35}, {f: lap_var_background, gt: 0.003}]
+        - all: [{f: face_count, gte: 1}, {f: face_lap_var, lt: 0.0008}, {f: lap_var_global, gt: 0.003}]
+    confidence:
+      max:
+        - {piecewise: {f: focus_ratio, points: [[0.35, 0.5], [0.1, 0.95]]}}
+        - {piecewise: {f: face_lap_var, points: [[0.0008, 0.5], [0.0003, 0.9]]}}
+    severity: {f: focus_ratio, thresholds: [0.25, 0.15], dir: desc}
+    evidence: [focus_ratio, lap_var_salient, lap_var_background, face_lap_var]
+
+  - tag: high_noise
+    dimension: sharpness
+    when: {all: [{f: noise_sigma, gt: 6}]}
+    confidence: {piecewise: {f: noise_sigma, points: [[6, 0.5], [12, 0.95]]}}
+    severity: {f: noise_sigma, thresholds: [8, 12], dir: asc}
+    evidence: [noise_sigma, exif_iso]
+    scene_overrides:
+      - scene: night
+        when: {all: [{f: noise_sigma, gt: 8}]}
+        confidence: {piecewise: {f: noise_sigma, points: [[8, 0.5], [14, 0.9]]}}
+
+suppress:
+  - {if: motion_blur, drop: [out_of_focus]}
+  - {if: out_of_focus, drop: [subject_out_of_focus]}
+  - {if: overexposed, drop: [underexposed]}
+  - {if: subject_too_small, drop: [excess_empty_space]}
+
+intentional:
+  - name: silhouette        # 剪影：主体很暗，但轮廓清楚，背景明亮
+    when:
+      all:
+        - {f: has_subject, eq: 1}
+        - {f: mean_L_salient, lt: 30}
+        - {f: mean_L_background, gt: 150}
+        - {f: lap_var_salient, gt: 0.001}
+    marks: [underexposed, shadows_crushed, backlit_subject]
+  - name: high_key          # 高调：整体明亮但动态范围正常，溢出不多
+    when: {all: [{f: mean_L, gt: 180}, {f: clip_high, lt: 0.15}, {f: dyn_range, gt: 100}]}
+    marks: [overexposed, low_contrast]
+  - name: low_key           # 低调：整体暗，但高光部分还在
+    when: {all: [{f: mean_L, lt: 60}, {f: p95, gt: 200}]}
+    marks: [underexposed, shadows_crushed]
+  - name: monochrome        # 黑白照片
+    when: {all: [{f: sat_mean, lt: 0.03}]}
+    marks: [dull_colors]
+  - name: long_exposure     # 慢门
+    when: {all: [{f: exif_exposure_time_s, gt: 0.5}]}
+    marks: [motion_blur]
+  - name: golden_hour       # 日落、暖色氛围
+    when: {all: [{f: scene_landscape, gt: 0.3}, {f: lab_b_neutral, gt: 8}, {f: mean_L, lt: 150}]}
+    marks: [warm_cast]
+
+scores:
+  sev_w: {low: 0.5, medium: 1.0, high: 1.6}
+  intentional_factor: 0.3
+  weights:
+    overexposed: 30
+    underexposed: 30
+    highlights_clipped: 20
+    shadows_crushed: 15
+    low_contrast: 15
+    backlit_subject: 25
+    subject_not_prominent: 25
+    subject_too_small: 20
+    subject_cut_off: 20
+    cluttered_background: 15
+    tilted_horizon: 15
+    unbalanced: 10
+    excess_empty_space: 10
+    warm_cast: 20
+    cool_cast: 20
+    green_tint: 20
+    magenta_tint: 20
+    oversaturated: 15
+    dull_colors: 15
+    motion_blur: 35
+    out_of_focus: 35
+    subject_out_of_focus: 35
+    high_noise: 15
+  overall: {exposure: 0.3, composition: 0.3, color: 0.2, sharpness: 0.2}
+
+crop:
+  enabled_when:
+    all:
+      - {f: has_subject, eq: 1}
+      - any:
+          - {f: subject_thirds_dist, gt: 0.12}
+          - {f: flat_ratio, gt: 0.6}
+          - {f: subject_area, lt: 0.05}
+  min_area: 0.7
+  keep_aspect: true

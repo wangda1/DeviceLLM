@@ -1,6 +1,7 @@
 # PhotoCritic 设计摘要（交接文档）
 
-> 日期：2026-10-11 · 对应 SPEC v0.3 · 仓库目前**只有文档，没有代码**
+> 日期：2026-10-11 · 对应 SPEC v0.4 · 仓库目前**只有文档和契约文件，没有业务代码**
+> **文档优先级**：契约文件（`schema/`、`assets/rules.yaml`）> 本文件 > `tickets/` > `SPEC.md`。发现冲突时以优先级高的为准，并顺手修正优先级低的文档。agent 的工作规则见仓库根目录的 [AGENTS.md](../AGENTS.md)。
 > 用途：在 Mac 上继续开发时的唯一入口。人和 AI agent 读完这份文档就能接着干活；需要细节时再查 [SPEC.md](SPEC.md) 和 [tickets/](tickets/README.md)。
 > 标了 **（待核实）** 的地方是设计时没能验证的事实，实现前要先确认。
 
@@ -122,13 +123,15 @@
 - 模型：MobileCLIP-S0（首选，最快）和 S2（对比）；来源是 apple/ml-mobileclip **（预处理细节和许可证待核实，以官方 preprocess 为准）**；只导出**图像编码器**。
 - 输出的图像 embedding 经过 L2 归一化后用于：
   1. **标签分**：每个标签有 K 对 prompt（pos 和 neg），`p_tag = mean_k softmax(100·[cos(e, pos_k), cos(e, neg_k)])[0]`
-  2. **场景分类**：landscape / portrait / food / night / architecture / street / pet / document / screenshot / other，取 softmax 的 top-2
+  2. **场景分类**：landscape / portrait / food / night / architecture / street / pet / indoor / document / screenshot / other（与 `schema/taxonomy.yaml` 一致），取 softmax 的 top-2，只保留概率 > 0.3 的
   3. **截图和文档过滤**：如果 `screenshot + document` 的概率 > 0.6，就返回 `skip_reason: "utility"`
 - 文本 embedding 预先算好：`assets/clip_text_emb.bin`，格式是 `magic "PCTE" | u32 version | u32 count | u32 dim | float16[count*dim]`，另有一个 `clip_text_emb.json` 记录每一行对应的标签或场景以及 pos/neg。
 - 阶段二（T-021）：在 embedding 上接多头 MLP，导出成独立的 ONNX，通过 config 切换。
 
 ### S4 融合规则（`assets/rules.yaml` → 构建时生成 `rules.json`）
-**规则 DSL（初稿）**：只允许比较、`all` / `any` / `not`、分段线性函数和阈值分档，Python 和 C++ 各写一个解释器。
+> **以文件为准**：语法和执行语义见 [`schema/rules_dsl.md`](../schema/rules_dsl.md)，23 个标签的起始规则见 [`assets/rules.yaml`](../assets/rules.yaml)（阈值是占位值，T-008 调参），特征名见 [`schema/features.md`](../schema/features.md)。下面只是一个示意。
+
+**规则 DSL**：只允许比较、`all` / `any` / `not`、分段线性函数和阈值分档，Python 和 C++ 各写一个解释器。
 ```yaml
 version: 1
 features_doc: "特征名与 S1/S2/S3 输出字段一一对应，见 signals.py / detectors.py / clip_scorer.py"
@@ -171,7 +174,7 @@ EXIF：ISO 800，1/30s，f/1.8，EV 0
 请针对以上问题给出拍摄或后期建议。
 ```
 - 位置描述由核心把 bbox 映射成九宫格的中文描述（"左上"、"中央偏左"……），不把原始坐标交给模型。
-- **输出格式（短 key，用 GBNF 约束）**：
+- **输出格式（短 key，用 GBNF 约束；schema 见 [`schema/vlm_output.schema.json`](../schema/vlm_output.schema.json)）**：
 ```json
 {"s":[{"t":["highlights_clipped"],"h":"天空过曝","a":"点按天空测光或降低曝光补偿，必要时开启 HDR。"}]}
 ```
@@ -267,7 +270,7 @@ void       pc_free_string(char*);
 ```
 `ort.ep` 可选 `cpu | coreml | xnnpack | nnapi | cuda`；EP 不可用时回退到 cpu，并记录在报告的 `runtime` 字段里。
 
-### QualityReport（`schema/report.schema.json`，T-002 中写成正式的 JSON Schema）
+### QualityReport（**以 [`schema/report.schema.json`](../schema/report.schema.json) 为准**，示例见 `schema/fixtures/report/valid/`）
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `schema_version` | `"1.0"` | 修改契约时必须升版本 |
@@ -276,13 +279,13 @@ void       pc_free_string(char*);
 | `scene` | `string[]`（最多 2 个） | 场景枚举见 S3 |
 | `scores` | `{exposure, composition, color, sharpness, overall}`，整数 0–100 | |
 | `issues[]` | `{tag, dimension, confidence(0–1), severity(low/medium/high), source(rules/vlm), intentional_possible(bool), evidence{特征名: 数值}}` | 按严重程度降序，最多 6 个 |
-| `suggestions[]` | `{issue_tags[], title, action, params{}, priority(1..), source(vlm/template)}` | 最多 3 条 |
-| `overlays` | `{saliency_bbox[x,y,w,h], saliency_grid[16][16], faces[[x,y,w,h]], horizon_angle_deg, horizon_conf, suggested_crop[x,y,w,h]}` | 坐标都归一化到 0–1，以图像左上角为原点 |
+| `suggestions[]` | `{issue_tags[], title(≤16), action(≤80), params{ev_delta, wb_kelvin_delta, tint_delta, rotate_deg, saturation_delta, contrast_delta}, priority(1–3), source(vlm/template)}` | 最多 3 条；`pc_analyze` 输出中为空 |
+| `overlays` | `{saliency_bbox[x,y,w,h], saliency_grid[16][16], faces[[x,y,w,h]], horizon_angle_deg, horizon_conf, suggested_crop[x,y,w,h]}` | 坐标都归一化到 0–1，以图像左上角为原点；`horizon_angle_deg` 为正表示右端偏高 |
 | `timings_ms` | `{s0..s5}` | |
 | `runtime` | `{platform, onnx_ep, llama_backend, core_version}` | |
-| `generator` | `"vlm:<model-id>" \| "template"` | |
+| `generator` | `"none" \| "template" \| "vlm:<model-id>"` | `none` 表示尚未执行 S5（`pc_analyze` 的输出） |
 
-### 标签体系 v1（`schema/taxonomy.yaml`）
+### 标签体系 v1（以 [`schema/taxonomy.yaml`](../schema/taxonomy.yaml) 为准，共 23 个）
 | 维度 | 标签 |
 |---|---|
 | exposure | `overexposed` 过曝 · `underexposed` 欠曝 · `highlights_clipped` 高光溢出 · `shadows_crushed` 暗部死黑 · `low_contrast` 发灰 · `backlit_subject` 逆光主体偏暗 |
@@ -347,8 +350,8 @@ LFM2.5-VL-450M 的结构：LFM2.5-350M + SigLIP2 NaFlex 86M；原生 512×512，
 ```
 on-device/
 ├── docs/            SPEC.md · DESIGN_SUMMARY.md（本文件）· decisions/（ADR）· tickets/
-├── schema/          report.schema.json · taxonomy.yaml · fixtures/（示例报告、signals_golden/）
-├── assets/          rules.yaml→rules.json · templates_zh.yaml · prompts/ · suggestions.gbnf(模板) · clip_text_emb.{bin,json}
+├── schema/          report.schema.json · vlm_output.schema.json · taxonomy.yaml · features.md · rules_dsl.md · fixtures/   ← 已存在
+├── assets/          rules.yaml（已存在）→ rules.json · templates_zh.yaml · prompts/ · clip_text_emb.{bin,json}（grammar 在运行时生成）
 ├── core/
 │   ├── CMakeLists.txt         选项：PC_WITH_LLAMA, PC_WITH_ORT, PC_METAL, PC_CUDA, PC_VULKAN, PC_BUILD_TESTS, PC_BUILD_PYTHON
 │   ├── include/photocritic.h
@@ -458,7 +461,7 @@ on-device/
 | 阶段 | Tickets | 说明 |
 |---|---|---|
 | A | **T-000** | 真机 spike，决定模型档位 |
-| B | T-001 → T-002 → T-003 → T-004 | T-001 改为在 macOS 上搭建：CMake + Apple Clang + uv；ORT 用 macOS 版本 |
+| B | T-001 → T-002 → T-003 → T-004 | T-001 在 macOS 上搭建：CMake + Apple Clang + uv；ORT 用 macOS 版本。T-002 的契约文件已经写好，剩下的是写成自动化测试 |
 | C | T-005、T-006、T-007、T-009 并行 → T-008 → T-010 → T-011 | Python 原型和评测都在 Mac 上跑；T-009 用 llama.cpp Metal；MobileCLIP 导出用 PyTorch（CPU 或 MPS） |
 | D | T-012 → T-013、T-014、T-015 → T-016 | C++ 核心在 macOS 上开发和测试（ORT 用 CPU 或 CoreML EP，llama.cpp 用 Metal） |
 | E | T-017 → T-018 → T-019 | iOS 外壳；T-017 的骨架在 T-012 完成后就可以开始 |

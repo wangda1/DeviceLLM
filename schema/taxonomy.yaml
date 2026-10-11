@@ -1,0 +1,170 @@
+# 问题标签体系 v1
+# 顺序有意义：rules_dsl.md §10 中排序相同时，按这里的顺序排列。
+# 修改标签集合时要同步：report.schema.json 的 $defs.tag、assets/rules.yaml、assets/templates_zh.yaml、CLIP prompts。
+version: 1
+
+dimensions:
+  exposure: 曝光
+  composition: 构图与主体
+  color: 色彩
+  sharpness: 清晰度
+
+scenes:   # 和 report.schema.json 的 $defs.scene 一致
+  landscape: 风景
+  portrait: 人像
+  food: 美食
+  night: 夜景
+  architecture: 建筑
+  street: 街拍
+  pet: 宠物
+  indoor: 室内
+  document: 文档
+  screenshot: 截图
+  other: 其他
+
+tags:
+  # ---------- exposure ----------
+  - id: overexposed
+    dimension: exposure
+    zh: 过曝
+    definition: 整体亮度过高，大面积细节发白。
+    intentional_when: 高调风格（白底、雪景、明亮清新风）
+    primary_signals: [mean_L, clip_high, clip_overexposed]
+  - id: underexposed
+    dimension: exposure
+    zh: 欠曝
+    definition: 整体亮度过低，主体和暗部细节难以看清。
+    intentional_when: 低调风格、剪影、夜景氛围
+    primary_signals: [mean_L, p95, clip_underexposed]
+  - id: highlights_clipped
+    dimension: exposure
+    zh: 高光溢出
+    definition: 局部高光（常见于天空、窗户、灯）完全变白，失去细节。
+    intentional_when: 逆光光晕、直接拍光源
+    primary_signals: [clip_high, clip_high_salient]
+  - id: shadows_crushed
+    dimension: exposure
+    zh: 暗部死黑
+    definition: 暗部大面积纯黑，失去细节。
+    intentional_when: 剪影、低调、强对比黑白
+    primary_signals: [clip_low, clip_low_salient]
+  - id: low_contrast
+    dimension: exposure
+    zh: 画面发灰
+    definition: 动态范围窄，画面灰蒙蒙、不通透。
+    intentional_when: 雾景、胶片褪色风格
+    primary_signals: [dyn_range, clip_low_contrast]
+  - id: backlit_subject
+    dimension: exposure
+    zh: 逆光主体偏暗
+    definition: 背景明亮而主体明显偏暗。
+    intentional_when: 剪影
+    primary_signals: [backlit_delta, mean_L_salient, mean_L_background, face_mean_L]
+
+  # ---------- composition ----------
+  - id: subject_not_prominent
+    dimension: composition
+    zh: 主体不突出
+    definition: 画面中没有明确的视觉中心，或者主体和背景区分度低。
+    intentional_when: 纪实或氛围类的大场景
+    primary_signals: [has_subject, saliency_contrast, clip_subject_not_prominent]
+  - id: subject_too_small
+    dimension: composition
+    zh: 主体太小
+    definition: 主体在画面中占比过小，难以吸引注意。
+    intentional_when: 以小衬大的大场景构图
+    primary_signals: [subject_area, face_max_area]
+  - id: subject_cut_off
+    dimension: composition
+    zh: 主体被裁切
+    definition: 主体（尤其是人脸、头顶、手脚）被画面边缘不恰当地截断。
+    intentional_when: 特写、局部构图
+    primary_signals: [subject_touch_edges, face_cut_off]
+  - id: cluttered_background
+    dimension: composition
+    zh: 背景杂乱
+    definition: 背景元素多且复杂，分散了对主体的注意。
+    intentional_when: 街拍中有意保留环境
+    primary_signals: [edge_density_background, clip_cluttered_background]
+  - id: tilted_horizon
+    dimension: composition
+    zh: 水平线倾斜
+    definition: 水平线或明显的水平结构轻微倾斜（不是有意的大角度倾斜）。
+    intentional_when: 荷兰角（大角度倾斜，> 15° 时不检测）
+    primary_signals: [horizon_abs_deg, horizon_conf]
+  - id: unbalanced
+    dimension: composition
+    zh: 构图失衡
+    definition: 视觉重量分布不均衡，主体位置让人感到别扭。
+    intentional_when: 刻意的留白和张力构图
+    primary_signals: [subject_thirds_dist, subject_center_dist, clip_unbalanced]
+  - id: excess_empty_space
+    dimension: composition
+    zh: 留白过多
+    definition: 大面积没有信息的区域，并且主体偏小。
+    intentional_when: 极简风格
+    primary_signals: [flat_ratio, subject_area]
+
+  # ---------- color ----------
+  - id: warm_cast
+    dimension: color
+    zh: 偏暖
+    definition: 中性色偏黄或偏橙（白平衡偏暖）。
+    intentional_when: 日落、烛光、暖色氛围
+    primary_signals: [lab_b_neutral, cct]
+  - id: cool_cast
+    dimension: color
+    zh: 偏冷
+    definition: 中性色偏蓝（白平衡偏冷）。
+    intentional_when: 蓝调时刻、冷色氛围
+    primary_signals: [lab_b_neutral, cct]
+  - id: green_tint
+    dimension: color
+    zh: 偏绿
+    definition: 中性色偏绿（常见于荧光灯和部分 LED 照明）。
+    intentional_when: 少见
+    primary_signals: [lab_a_neutral]
+  - id: magenta_tint
+    dimension: color
+    zh: 偏品红
+    definition: 中性色偏品红或偏紫。
+    intentional_when: 霓虹灯场景
+    primary_signals: [lab_a_neutral]
+  - id: oversaturated
+    dimension: color
+    zh: 过饱和
+    definition: 色彩过于浓艳，局部饱和溢出，失去层次。
+    intentional_when: 波普、霓虹风格
+    primary_signals: [sat_mean, sat_clip, clip_oversaturated]
+  - id: dull_colors
+    dimension: color
+    zh: 色彩寡淡
+    definition: 色彩饱和度过低，画面平淡。
+    intentional_when: 黑白、低饱和胶片风格
+    primary_signals: [sat_mean, clip_dull_colors]
+
+  # ---------- sharpness ----------
+  - id: motion_blur
+    dimension: sharpness
+    zh: 运动模糊/手抖
+    definition: 拍摄时相机或主体移动造成的方向性模糊。
+    intentional_when: 慢门（流水、车轨、追焦）
+    primary_signals: [lap_var_global, grad_anisotropy, exif_exposure_time_s]
+  - id: out_of_focus
+    dimension: sharpness
+    zh: 全图失焦
+    definition: 整张图都没有清晰的区域。
+    intentional_when: 刻意的虚焦或光斑
+    primary_signals: [lap_var_global, grad_anisotropy]
+  - id: subject_out_of_focus
+    dimension: sharpness
+    zh: 主体跑焦
+    definition: 背景或前景清楚，主体却是模糊的。
+    intentional_when: 少见
+    primary_signals: [focus_ratio, lap_var_salient, lap_var_background, face_lap_var]
+  - id: high_noise
+    dimension: sharpness
+    zh: 噪点多
+    definition: 平坦区域有明显的颗粒或彩色噪点（常见于暗光高 ISO）。
+    intentional_when: 胶片颗粒风格
+    primary_signals: [noise_sigma, exif_iso]

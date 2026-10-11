@@ -1,5 +1,5 @@
 # T-011 端到端参考 pipeline 与 M1 基线报告
-**环境**: 🐧 Linux · **依赖**: T-010 · **规模**: S · **里程碑**: M1（出口）
+**环境**: 🐧 Linux · **依赖**: T-010 · **规模**: S · **里程碑**: M1（出口） · **状态**: 待开始
 
 ## 交付物
 - `ml/photocritic/pipeline.py` 和 CLI：`uv run photocritic analyze img.jpg` 输出完整的 QualityReport JSON 和一份可读的终端摘要

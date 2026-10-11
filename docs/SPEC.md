@@ -1,7 +1,9 @@
-# PhotoCritic 端侧图片质量分析 — Spec v0.3
+# PhotoCritic 端侧图片质量分析 — Spec v0.4
 
 > 状态：Draft，2026-10-11 · 交接与实现细节见 [DESIGN_SUMMARY.md](DESIGN_SUMMARY.md)
 > 定位：一个**学习端侧模型**的项目。业务目标是做一个能在手机上离线运行的"摄影建议"App，先做 iOS，后期扩展到 Android 等其他端侧平台；学习目标是走一遍从模型选型、评测、量化、转换、跨平台部署到微调的完整链路。
+>
+> v0.4 变更：数据契约落成实际文件（`schema/`、`assets/rules.yaml`），§5 改为文件索引；C API 以 DESIGN_SUMMARY §4 为准；VLM 改为短 key 输出，grammar 在运行时生成。
 >
 > v0.3 变更：VLM 改为分档，默认用 1B 以下的小模型（§4 S5）；性能预算按档位重设，以 iPhone 16 Pro 为基准机型（§6）；新增 T-000 真机可行性 spike。
 >
@@ -92,7 +94,7 @@
 
 ### S0 预处理（核心）
 - 平台层输入：`RGBA8` 缓冲区（已转换到 sRGB）、宽高、stride，以及 EXIF 结构体（ISO、快门、光圈、焦距、曝光补偿、白平衡模式、设备型号）
-- 核心生成 `analysis`（长边 1024）和各模型需要的输入尺寸；缩放用自己实现的 area/bilinear 插值，保证各平台结果一致
+- 核心生成 `analysis`（长边 1024）和各模型需要的输入尺寸；缩放用自己实现的 area 插值（精确定义见 DESIGN_SUMMARY §3 S0），保证各平台结果一致
 - 平台层的职责（唯一允许依赖原生能力的地方）：HEIC/JPEG 解码、Display P3 转 sRGB、应用 EXIF 方向
 
 ### S1 检测模型（核心，ONNX Runtime）
@@ -117,7 +119,7 @@
 ### S4 融合规则（核心）
 - 输入：S1 + S2 + S3 的特征向量
 - 输出：4 个维度分数，以及标签列表 `{tag, confidence, severity, evidence}`
-- 规则写在 `assets/rules.json`（由 YAML 源文件生成），包含阈值、权重和场景修正；Python 原型和 C++ 核心执行同一份规则
+- 规则写在 `assets/rules.yaml`（构建时生成 `rules.json`），包含阈值、权重、场景修正、压制关系和"有意为之"的判断；Python 原型和 C++ 核心执行同一份规则。语法见 `schema/rules_dsl.md`，可用的特征见 `schema/features.md`；23 个标签的起始规则已经写好，阈值是占位值，要在 T-008 中调参
 - 规则受场景影响：比如夜景允许更多暗部，高调/低调风格的照片要放宽曝光阈值
 - 阶段二可以把部分规则换成小模型（逻辑回归或 GBDT 导出为 ONNX）
 
@@ -138,74 +140,35 @@
 - **对照组：纯文本小模型**。只把 findings、场景标签和 EXIF 交给一个小语言模型（例如 LFM2.5-350M 或 Qwen3.5-0.8B 的纯文本模式），不输入图片。用来衡量"看图"到底带来多少质量提升；如果提升不大，就可以省掉视觉编码的开销。
 - 输入：缩放后的图片（默认 512px，用 `--image-max-tokens` 控制图像 token 数）+ system prompt + S4 的结构化 findings + 场景标签 + EXIF 摘要
 - 输出长度上限 200 tokens：JSON 字段名用短 key；数值参数（例如 EV、色温）由模板根据 S2 指标填写，VLM 只写简短文字
-- 输出：用 GBNF grammar 约束成符合 schema 的 JSON；通过 C 回调函数流式返回
+- 输出：VLM 只输出**短 key JSON**（`schema/vlm_output.schema.json`）。GBNF grammar 由核心**在运行时生成**：标签枚举 = 本次检测到的标签 ∪ {"other"}。核心再把它展开成 `report.suggestions[]`，`params` 由模板计算。生成过程通过 C 回调流式返回
 - 超时：8s 硬超时；支持取消
 - **S5' 兜底**：按标签选模板生成建议（参数从 S2 的指标里计算，比如 EV 补偿量），模板在 `assets/templates_zh.yaml`
 
-### C API 草案（`core/include/photocritic.h`）
-```c
-typedef struct pc_engine pc_engine;
-pc_engine* pc_engine_create(const char* config_json);          // 模型路径、EP 选择、线程数、超时
-void       pc_engine_destroy(pc_engine*);
-// 同步完成 S0–S4，返回报告 JSON（不含 suggestions）
-char*      pc_analyze(pc_engine*, const pc_image* img, const pc_exif* exif);
-// 异步执行 S5，每产出一段 token 调用一次 on_token，结束时 on_done 返回完整报告 JSON
-int        pc_suggest(pc_engine*, const char* report_json,
-                      void (*on_token)(const char*, void*),
-                      void (*on_done)(const char* final_json, int status, void*),
-                      void* user);
-void       pc_cancel(pc_engine*);
-void       pc_free_string(char*);
-```
-数据全部用 JSON 字符串跨语言边界传递，以 `schema/report.schema.json` 为准。好处是 FFI 很简单，代价是多一次序列化（报告很小，可以忽略）。
+### C API
+完整定义（错误码、线程模型、内存所有权、回调规则）见 [DESIGN_SUMMARY.md](DESIGN_SUMMARY.md) §4，以那里为准。要点：`pc_engine_create` / `pc_analyze`（同步执行 S0–S4）/ `pc_suggest`（异步执行 S5，流式回调）/ `pc_cancel` / `pc_engine_release_vlm`；数据全部用 JSON 字符串跨语言边界传递。好处是 FFI 很简单，代价是多一次序列化（报告很小，可以忽略）。
 
 ---
 
-## 5. 数据契约（摘要，完整定义见 `schema/report.schema.json`）
+## 5. 数据契约
 
-```json
-{
-  "schema_version": "1.0",
-  "image": {"width": 4032, "height": 3024, "exif": {"iso": 800, "shutter": "1/30", "ev": 0.0}},
-  "scene": ["landscape", "outdoor"],
-  "skip_reason": null,
-  "scores": {"exposure": 42, "composition": 71, "color": 65, "sharpness": 88, "overall": 62},
-  "issues": [
-    {
-      "tag": "highlights_clipped", "dimension": "exposure",
-      "confidence": 0.91, "severity": "high", "source": "rules",
-      "evidence": {"clip_ratio_high": 0.083, "region": "sky"}
-    }
-  ],
-  "suggestions": [
-    {
-      "issue_tags": ["highlights_clipped"],
-      "title": "天空过曝",
-      "action": "拍摄时点按天空测光，或者曝光补偿调到 −0.7EV；也可以开启 HDR。",
-      "params": {"ev_delta": -0.7},
-      "priority": 1
-    }
-  ],
-  "overlays": {
-    "saliency_bbox": [0.31, 0.22, 0.38, 0.51],
-    "horizon_angle_deg": 2.4,
-    "suggested_crop": [0.05, 0.0, 0.9, 1.0]
-  },
-  "timings_ms": {"s0": 8, "s1": 45, "s2": 35, "s3": 60, "s4": 1, "s5": 3100},
-  "runtime": {"platform": "ios", "onnx_ep": "coreml", "llama_backend": "metal"},
-  "generator": "vlm:lfm2.5-vl-450m-q4_0"
-}
-```
+契约以**文件**为准，本节只做索引：
 
-### 问题标签体系 v1
-| 维度 | 标签 |
+| 文件 | 内容 |
 |---|---|
-| exposure | `overexposed` 过曝 · `underexposed` 欠曝 · `highlights_clipped` 高光溢出 · `shadows_crushed` 暗部死黑 · `low_contrast` 发灰 · `backlit_subject` 逆光主体偏暗 |
-| composition | `subject_not_prominent` 主体不突出 · `subject_too_small` 主体太小 · `subject_cut_off` 主体被裁切 · `cluttered_background` 背景杂乱 · `tilted_horizon` 水平线倾斜 · `unbalanced` 构图失衡 · `excess_empty_space` 留白过多 |
-| color | `warm_cast` 偏暖 · `cool_cast` 偏冷 · `green_tint` 偏绿 · `magenta_tint` 偏品红 · `oversaturated` 过饱和 · `dull_colors` 色彩寡淡 |
-| sharpness | `motion_blur` 运动模糊/手抖 · `out_of_focus` 全图失焦 · `subject_out_of_focus` 主体跑焦 · `high_noise` 噪点多 |
+| `schema/report.schema.json` | QualityReport 的 JSON Schema（draft 2020-12），`schema_version: "1.0"` |
+| `schema/vlm_output.schema.json` | VLM 的短 key 输出格式 |
+| `schema/taxonomy.yaml` | 23 个问题标签（中文名、定义、有意为之的场景、主要信号）和 11 个场景类别 |
+| `schema/features.md` | 规则和 `evidence` 可以使用的特征名、单位和定义 |
+| `schema/rules_dsl.md` | 融合规则 DSL 的语法和执行语义 |
+| `schema/fixtures/report/{valid,invalid}/` | 示例报告；`valid/01_full_vlm.json` 的分数和置信度都是按 `assets/rules.yaml` 的公式算出来的 |
+| `schema/fixtures/vlm_output/{valid,invalid}/` | VLM 输出示例 |
 
-`severity` 取 `low | medium | high`。如果判断这是有意为之的风格（比如高调、剪影），标签保留，但要加 `"intentional_possible": true`，建议里也要说明这一点。
+关键约定：
+- 一份报告有两种状态：`pc_analyze` 返回时 `suggestions = []`、`generator = "none"`；`pc_suggest` 完成后填充 suggestions，`generator` 为 `vlm:<model>` 或 `template`
+- `skip_reason` 不为 null 时（截图/文档、图太小），`scores` 为 null，`issues` 和 `suggestions` 为空
+- 坐标全部归一化到 [0,1]，bbox 为 `[x, y, w, h]`，原点在图像左上角
+- 被判断为"有意为之"的 issue 保留，但 `intentional_possible: true`，计算分数时扣分打折，建议里要说明这一点
+- 修改契约必须升 `schema_version`，并同步 fixtures、taxonomy、rules 和两端的实现
 
 ---
 
@@ -273,13 +236,14 @@ on-device/
 │   ├── decisions/              # ADR：选型和取舍记录
 │   └── tickets/
 ├── schema/
-│   ├── report.schema.json
-│   └── fixtures/               # 示例报告和 golden 对齐数据
+│   ├── report.schema.json · vlm_output.schema.json
+│   ├── taxonomy.yaml · features.md · rules_dsl.md
+│   └── fixtures/               # 示例报告、VLM 输出示例、signals_golden/
 ├── assets/                     # 运行时数据文件，所有平台共用
 │   ├── rules.yaml → rules.json
 │   ├── templates_zh.yaml
 │   ├── prompts/
-│   ├── suggestions.gbnf
+│   ├── (suggestions.gbnf 由核心在运行时生成，不放文件)
 │   └── clip_text_emb.bin
 ├── core/                       # C++17 跨平台核心（CMake）
 │   ├── include/photocritic.h   # 唯一对外的 C API
@@ -297,7 +261,7 @@ on-device/
 ├── platforms/
 │   ├── ios/                    # 在 Mac 上开发：Xcode 工程 + Swift 封装 + SwiftUI
 │   └── android/                # 后期；v1 只有 NDK 构建脚本
-└── scripts/                    # 各平台构建脚本：build-linux.sh, build-ios-xcframework.sh, build-android.sh
+└── scripts/                    # 各平台构建脚本：build-macos.sh, build-ios-xcframework.sh, build-android.sh（Linux 只用于训练）
 ```
 
 ---

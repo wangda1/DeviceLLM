@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://photocritic.local/schema/vlm_output/1.0",
+  "title": "VLM short-key output",
+  "description": "S5 中 VLM 的原始输出格式（短 key，节省 token）。核心在运行时根据本次检测到的标签生成 GBNF grammar：t 的枚举 = 本次 issues 的 tag ∪ {\"other\"}；长度上限在 grammar 中按字符数约束（h ≤ 12，a ≤ 60）。核心再把它展开成 report.suggestions[]，params 由模板计算，source=vlm。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["s"],
+  "properties": {
+    "s": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["t", "h", "a"],
+        "properties": {
+          "t": {"type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": {"type": "string"}},
+          "h": {"type": "string", "minLength": 1, "maxLength": 12},
+          "a": {"type": "string", "minLength": 1, "maxLength": 60}
+        }
+      }
+    }
+  }
+}

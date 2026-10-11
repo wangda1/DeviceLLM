@@ -1,0 +1,202 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://photocritic.local/schema/report/1.0",
+  "title": "PhotoCritic QualityReport",
+  "description": "Python 原型、C++ 核心和所有平台外壳共用的唯一输出契约。修改时必须升 schema_version，并同步 fixtures。字段的中文说明见 docs/DESIGN_SUMMARY.md §5。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "image", "skip_reason", "scene", "scores", "issues", "suggestions", "overlays", "timings_ms", "runtime", "generator"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height", "exif"],
+      "properties": {
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "exif": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["iso", "exposure_time_s", "f_number", "focal_length_35mm", "exposure_bias_ev", "white_balance_mode", "device_model"],
+          "properties": {
+            "iso": {"type": ["number", "null"], "minimum": 0},
+            "exposure_time_s": {"type": ["number", "null"], "minimum": 0},
+            "f_number": {"type": ["number", "null"], "minimum": 0},
+            "focal_length_35mm": {"type": ["number", "null"], "minimum": 0},
+            "exposure_bias_ev": {"type": ["number", "null"]},
+            "white_balance_mode": {"enum": ["auto", "manual", "unknown"]},
+            "device_model": {"type": ["string", "null"]}
+          }
+        }
+      }
+    },
+
+    "skip_reason": {
+      "description": "不为 null 时：scores 为 null，issues/suggestions 为空数组，overlays 各字段为 null 或空。",
+      "enum": [null, "utility", "too_small"]
+    },
+
+    "scene": {
+      "description": "CLIP 零样本场景分类的 top-2（概率 > 0.3 的才列出），按概率降序。",
+      "type": "array",
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/scene"}
+    },
+
+    "scores": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["exposure", "composition", "color", "sharpness", "overall"],
+          "properties": {
+            "exposure": {"$ref": "#/$defs/score"},
+            "composition": {"$ref": "#/$defs/score"},
+            "color": {"$ref": "#/$defs/score"},
+            "sharpness": {"$ref": "#/$defs/score"},
+            "overall": {"$ref": "#/$defs/score"}
+          }
+        }
+      ]
+    },
+
+    "issues": {
+      "description": "按 severity 权重 × confidence 降序，最多 6 条。tag 与 dimension 的对应关系必须符合 taxonomy.yaml（由测试检查，schema 不表达）。",
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tag", "dimension", "confidence", "severity", "source", "intentional_possible", "evidence"],
+        "properties": {
+          "tag": {"$ref": "#/$defs/tag"},
+          "dimension": {"$ref": "#/$defs/dimension"},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+          "severity": {"enum": ["low", "medium", "high"]},
+          "source": {"enum": ["rules", "vlm"]},
+          "intentional_possible": {"type": "boolean"},
+          "evidence": {
+            "description": "触发该标签的特征名 → 数值，特征名必须来自 schema/features.md。source=vlm 时可以为空对象。",
+            "type": "object",
+            "additionalProperties": {"type": "number"}
+          }
+        }
+      }
+    },
+
+    "suggestions": {
+      "description": "pc_analyze 的输出中恒为空数组；pc_suggest 完成后填充。最多 3 条，priority 从 1 开始连续编号。",
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issue_tags", "title", "action", "params", "priority", "source"],
+        "properties": {
+          "issue_tags": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"anyOf": [{"$ref": "#/$defs/tag"}, {"const": "other"}]}
+          },
+          "title": {"type": "string", "minLength": 1, "maxLength": 16},
+          "action": {"type": "string", "minLength": 1, "maxLength": 80},
+          "params": {
+            "description": "由模板根据 S2 指标计算的数值参数，VLM 不生成数字。符号约定：ev_delta 正值=增加曝光；wb_kelvin_delta 负值=往冷色方向调（相当于修图软件里把色温滑块往左/往蓝色拉）；tint_delta 正值=往品红方向；rotate_deg 正值=逆时针旋转（所以水平线右端偏高 2.4° 时为 -2.4）；saturation_delta、contrast_delta 为修图软件滑块的增量（-100~100）。",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "ev_delta": {"type": "number", "minimum": -3, "maximum": 3},
+              "wb_kelvin_delta": {"type": "number", "minimum": -3000, "maximum": 3000},
+              "tint_delta": {"type": "number", "minimum": -50, "maximum": 50},
+              "rotate_deg": {"type": "number", "minimum": -15, "maximum": 15},
+              "saturation_delta": {"type": "number", "minimum": -100, "maximum": 100},
+              "contrast_delta": {"type": "number", "minimum": -100, "maximum": 100}
+            }
+          },
+          "priority": {"type": "integer", "minimum": 1, "maximum": 3},
+          "source": {"enum": ["vlm", "template"]}
+        }
+      }
+    },
+
+    "overlays": {
+      "description": "坐标全部归一化到 [0,1]，原点为（已应用方向的）图像左上角；bbox 为 [x, y, w, h]。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["saliency_bbox", "saliency_grid", "faces", "horizon_angle_deg", "horizon_conf", "suggested_crop"],
+      "properties": {
+        "saliency_bbox": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/bbox"}]},
+        "saliency_grid": {
+          "description": "16 行 × 16 列，行优先，值域 [0,1]。",
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "array", "minItems": 16, "maxItems": 16,
+              "items": {"type": "array", "minItems": 16, "maxItems": 16,
+                        "items": {"type": "number", "minimum": 0, "maximum": 1}}
+            }
+          ]
+        },
+        "faces": {"type": "array", "items": {"$ref": "#/$defs/bbox"}},
+        "horizon_angle_deg": {
+          "description": "正值表示水平线右端偏高（需要顺时针旋转来校正）。",
+          "type": ["number", "null"], "minimum": -15, "maximum": 15
+        },
+        "horizon_conf": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "suggested_crop": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/bbox"}]}
+      }
+    },
+
+    "timings_ms": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["s0", "s1", "s2", "s3", "s4", "s5"],
+      "properties": {
+        "s0": {"$ref": "#/$defs/ms"}, "s1": {"$ref": "#/$defs/ms"}, "s2": {"$ref": "#/$defs/ms"},
+        "s3": {"$ref": "#/$defs/ms"}, "s4": {"$ref": "#/$defs/ms"}, "s5": {"$ref": "#/$defs/ms"}
+      }
+    },
+
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "onnx_ep", "llama_backend", "core_version"],
+      "properties": {
+        "platform": {"enum": ["ios", "android", "macos", "linux", "python"]},
+        "onnx_ep": {"enum": ["cpu", "coreml", "xnnpack", "nnapi", "cuda", "none"]},
+        "llama_backend": {"enum": ["metal", "cpu", "cuda", "vulkan", "none"]},
+        "core_version": {"type": "string"}
+      }
+    },
+
+    "generator": {
+      "description": "none：尚未执行 S5（pc_analyze 的输出）；template：S5' 模板兜底；vlm:<model-id>：VLM 生成。",
+      "type": "string",
+      "pattern": "^(none|template|vlm:[A-Za-z0-9._-]+)$"
+    }
+  },
+
+  "$defs": {
+    "score": {"type": "integer", "minimum": 0, "maximum": 100},
+    "ms": {"type": ["number", "null"], "minimum": 0},
+    "bbox": {
+      "type": "array", "minItems": 4, "maxItems": 4,
+      "items": {"type": "number", "minimum": 0, "maximum": 1}
+    },
+    "dimension": {"enum": ["exposure", "composition", "color", "sharpness"]},
+    "scene": {"enum": ["landscape", "portrait", "food", "night", "architecture", "street", "pet", "indoor", "document", "screenshot", "other"]},
+    "tag": {
+      "enum": [
+        "overexposed", "underexposed", "highlights_clipped", "shadows_crushed", "low_contrast", "backlit_subject",
+        "subject_not_prominent", "subject_too_small", "subject_cut_off", "cluttered_background", "tilted_horizon", "unbalanced", "excess_empty_space",
+        "warm_cast", "cool_cast", "green_tint", "magenta_tint", "oversaturated", "dull_colors",
+        "motion_blur", "out_of_focus", "subject_out_of_focus", "high_noise"
+      ]
+    }
+  }
+}

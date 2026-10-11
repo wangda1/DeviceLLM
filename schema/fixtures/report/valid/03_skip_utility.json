@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0",
+  "image": {
+    "width": 1179,
+    "height": 2556,
+    "exif": {
+      "iso": null,
+      "exposure_time_s": null,
+      "f_number": null,
+      "focal_length_35mm": null,
+      "exposure_bias_ev": null,
+      "white_balance_mode": "unknown",
+      "device_model": null
+    }
+  },
+  "skip_reason": "utility",
+  "scene": [
+    "screenshot"
+  ],
+  "scores": null,
+  "issues": [],
+  "suggestions": [],
+  "overlays": {
+    "saliency_bbox": null,
+    "saliency_grid": null,
+    "faces": [],
+    "horizon_angle_deg": null,
+    "horizon_conf": null,
+    "suggested_crop": null
+  },
+  "timings_ms": {
+    "s0": 6,
+    "s1": null,
+    "s2": null,
+    "s3": 55,
+    "s4": null,
+    "s5": null
+  },
+  "runtime": {
+    "platform": "ios",
+    "onnx_ep": "coreml",
+    "llama_backend": "metal",
+    "core_version": "0.1.0"
+  },
+  "generator": "none"
+}
